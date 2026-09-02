@@ -31,6 +31,24 @@ Reviewed sample size: 276,775 bytes. Pinned SHA-256:
 785b85b4206a1bff7555df66850309e366d76951e037fe1a8d4f50caa5c424a0
 ```
 
+## Observed validation
+
+### 2026-09-02 - Antivirus preempted the official sample
+
+The first official-sample run displayed a Windows notification and returned `Inconclusive`. Defender recorded Antivirus Event 1116, but no Event 1121 containing the target Rule ID. This proves that Antivirus detected the sample or its payload first; it does not validate Rule 06.
+
+Before selecting a fallback, identify whether Event 1116 names the DOCM or `%TEMP%\lockysample.exe`:
+
+```powershell
+Get-WinEvent -FilterHashtable @{
+  LogName = 'Microsoft-Windows-Windows Defender/Operational'
+  Id = 1116
+  StartTime = (Get-Date).AddHours(-1)
+} | Select-Object -First 3 TimeCreated, Id, Message | Format-List
+```
+
+Microsoft's demonstration guidance uses an Antivirus-excluded staging folder for downloading, then runs the copied test file from a nonexcluded folder. Microsoft's ASR exclusion table also states that Rule 06 does not honor Defender Antivirus file/folder exclusions. Any diagnostic exclusion must still be temporary, exact-path only, explicitly authorized, and removed after the run.
+
 ## Objective and safety boundary
 
 The primary test downloads Microsoft's official Rule 06 DOCM, verifies the pinned SHA-256, opens it in Word, and correlates Defender events using only the target GUID. The binary sample is not committed to this repository.
