@@ -40,6 +40,10 @@ Review of Microsoft's official sample showed a much larger obfuscated data struc
 
 Synthetic obfuscation is therefore retained only for diagnostics. The new primary path is Microsoft's official 63,501-byte JScript sample. The runner accepts an operator-provided copy or performs an explicitly authorized download from `demo.wd.microsoft.com`, then requires SHA-256 `cea7dbe4e275f248573c72ba75fff24362eb60143108dd909fb082f0464c70cb` before execution. The pinned sample's benign observable action is launching Notepad.
 
+### 2026-09-02 - Official sample validated locally
+
+The pinned Microsoft sample completed with `Result = Blocked`, a matching target-rule Event 1121, and a Windows block notification. A `Blocked` result on the `MicrosoftSample` path also confirms `NotepadStarted = False`. `MarkerCreated = False` is expected because this path does not use the synthetic marker artifact. Local enforcement is validated; Microsoft Defender XDR portal ingestion remains pending.
+
 ## Test design
 
 The primary trigger uses the Microsoft-published obfuscated JScript sample referenced by the official ASR demonstration. The runner downloads it only when `-AllowOfficialDownload` is specified and refuses to execute it unless its SHA-256 matches the reviewed value. The expected non-blocked behavior is opening Notepad; the sample contains no destructive payload.
