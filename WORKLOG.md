@@ -2,7 +2,7 @@
 
 | Rule | Implementation | Windows validation | Notes |
 |---|---|---|---|
-| 01 - Block Adobe Reader from creating child processes | Ready | Pending | Benign Notepad launch test, browser URI fallback, local event collection, XDR query, and process-scoped execution-policy recovery documented. |
+| 01 - Block Adobe Reader from creating child processes | Ready | Inconclusive / Deferred | Test flow completed, but no block notification, incident, or alert was observed. Local Event 1121/1122 and JSON evidence remain to be checked when this rule is revisited. |
 
 ## Working convention
 

@@ -20,6 +20,19 @@ Reviewed on 2026-09-02:
 
 Microsoft documents extra cloud protection requirements for this rule: EDR alerts require cloud protection level `High plus` or `Zero tolerance`, while user notifications require `High`, `High plus`, or `Zero tolerance`. Local enforcement and Event 1121 are therefore the primary test oracle; absence of a portal alert alone is not a failed block.
 
+## Observed test runs
+
+### 2026-09-02 - Inconclusive / Deferred
+
+Operator-reported observations:
+
+- The test flow completed normally.
+- No Defender block page or user notification appeared.
+- No incident or alert appeared in the Microsoft Defender portal.
+- The local Event ID 1121/1122 result and generated JSON evidence were not confirmed in this run.
+
+This run is recorded as `Inconclusive`, not `Not triggered`, because the absence of a notification, incident, or alert does not establish whether local ASR enforcement occurred. When this rule is revisited, check `result-Notepad.json`, local Event IDs 1121/1122, the Advanced Hunting action type, Defender for Endpoint onboarding, and the configured cloud protection level.
+
 ## Test design
 
 The PowerShell runner generates a PDF with a visible link annotation. The primary `Notepad` trigger asks Adobe to launch the harmless Windows Notepad executable. In Block mode, Notepad should not start and Windows Defender should log Event 1121 containing the rule GUID.
