@@ -200,8 +200,8 @@ catch {
 
 Start-Sleep -Seconds $WaitSeconds
 
-$asrEvents = Get-ASRRuleEvents -Since $startedAt -Id $RuleId
-$antivirusEvents = Get-AntivirusEvents -Since $startedAt
+$asrEvents = @(Get-ASRRuleEvents -Since $startedAt -Id $RuleId)
+$antivirusEvents = @(Get-AntivirusEvents -Since $startedAt)
 $blockEvents = @($asrEvents | Where-Object Id -eq 1121)
 $auditEvents = @($asrEvents | Where-Object Id -eq 1122)
 $markerCreated = Test-Path -LiteralPath $markerPath

@@ -19,6 +19,14 @@ Reviewed on 2026-09-02:
 - [Microsoft ASR events reference](https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-windows-events) defines Event ID 1121 as Block, 1122 as Audit, and 1129 as Warn override in the Windows Defender Operational log.
 - [Microsoft ASR demonstrations](https://learn.microsoft.com/en-us/defender-endpoint/defender-endpoint-demonstration-attack-surface-reduction-rules) publishes an official obfuscated JScript sample but warns that demonstration files can be detected as malware, quarantined, or blocked before the intended ASR test.
 
+## Observed test runs
+
+### 2026-09-02 - Runner error / Retest required
+
+The first Windows run reached evidence collection but stopped with `The property 'Count' cannot be found on this object`. PowerShell had unrolled a zero- or one-item event array into `$null` or a scalar while `Set-StrictMode` was active. No ASR conclusion was assigned to this run.
+
+The collector now wraps both ASR and Antivirus event results with `@(...)`, guaranteeing an array for zero, one, or many events. Retest with the same command after pulling this fix.
+
 ## Test design
 
 The primary trigger generates a JScript whose readable source is percent-encoded and executed through `eval(unescape())`. After decoding, the script performs only one action: use `Scripting.FileSystemObject` to write a marker under `%TEMP%\DefenderASRLab`. It launches no child process, downloads nothing, and changes no persistence or security settings.
@@ -111,6 +119,7 @@ For Microsoft Defender XDR, open **Hunting > Advanced hunting** and run [advance
 | No event + marker absent | Trigger failed before conclusive evaluation | Review `TriggerError`, `ProcessExitCode`, script scanning, and application-control policy. |
 | `CloudProtectionEnabled` is `False` | Required dependency is missing | Correct tenant/device configuration before retesting. |
 | Local Event 1121 but portal is empty | Local enforcement succeeded; ingestion is pending or onboarding needs review | Wait, then run Advanced Hunting and check device onboarding. |
+| `.Count` property error | An outdated runner did not normalize empty/single event results | Pull the latest revision and rerun; no policy change is needed. |
 
 ## Cleanup
 
