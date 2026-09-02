@@ -2,8 +2,12 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('JScript', 'PowerShell')]
-    [string]$Trigger = 'JScript',
+    [ValidateSet('MicrosoftSample', 'JScript', 'PowerShell')]
+    [string]$Trigger = 'MicrosoftSample',
+
+    [string]$MicrosoftSamplePath,
+
+    [switch]$AllowOfficialDownload,
 
     [string]$OutputDirectory = (Join-Path $env:TEMP 'DefenderASRLab\03-obfuscated-scripts'),
 
@@ -17,6 +21,8 @@ $ErrorActionPreference = 'Stop'
 $RuleId = '5beb7efe-fd9a-4556-801d-275e5ffc04cc'
 $RuleName = 'Block execution of potentially obfuscated scripts'
 $DefenderLog = 'Microsoft-Windows-Windows Defender/Operational'
+$OfficialSampleUrl = 'https://demo.wd.microsoft.com/Content/TestFile_ScriptObfuscatedContent_5BEB7EFE-FD9A-4556-801D-275E5FFC04CC.js'
+$OfficialSampleSha256 = 'cea7dbe4e275f248573c72ba75fff24362eb60143108dd909fb082f0464c70cb'
 
 function Get-ASRRuleState {
     param(
@@ -127,6 +133,8 @@ $triggerError = $null
 $processExitCode = $null
 $triggerDetail = $null
 $artifactVersion = $null
+$actualSampleSha256 = $null
+$existingNotepadIds = @(Get-Process notepad -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
 
 Write-Host "Rule: $RuleName"
 Write-Host "GUID: $RuleId"
@@ -156,7 +164,42 @@ if (-not $amsiPresent) {
 }
 
 try {
-    if ($Trigger -eq 'JScript') {
+    if ($Trigger -eq 'MicrosoftSample') {
+        if ($existingNotepadIds.Count -gt 0) {
+            throw 'Close all Notepad windows before using MicrosoftSample so the runner can measure whether the sample starts Notepad.'
+        }
+
+        if ($MicrosoftSamplePath) {
+            if (-not (Test-Path -LiteralPath $MicrosoftSamplePath -PathType Leaf)) {
+                throw "Microsoft sample was not found at: $MicrosoftSamplePath"
+            }
+            $artifactPath = (Resolve-Path -LiteralPath $MicrosoftSamplePath).Path
+        }
+        else {
+            if (-not $AllowOfficialDownload) {
+                throw 'MicrosoftSample requires -AllowOfficialDownload or -MicrosoftSamplePath. No download was performed.'
+            }
+            $artifactPath = Join-Path $OutputDirectory 'Microsoft-official-obfuscated-script.js'
+            Invoke-WebRequest -UseBasicParsing -Uri $OfficialSampleUrl -OutFile $artifactPath
+        }
+
+        $actualSampleSha256 = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualSampleSha256 -ne $OfficialSampleSha256) {
+            throw "Official sample SHA-256 mismatch. Expected $OfficialSampleSha256 but received $actualSampleSha256. The file was not executed."
+        }
+
+        $cscriptPath = Join-Path $env:SystemRoot 'System32\cscript.exe'
+        if (-not (Test-Path -LiteralPath $cscriptPath -PathType Leaf)) {
+            throw "Windows Script Host was not found at: $cscriptPath"
+        }
+
+        $artifactVersion = 'microsoft-official-sample-sha256-pinned'
+        $triggerDetail = 'Microsoft Defender official obfuscated JScript sample; verified SHA-256; expected benign action is notepad.exe'
+        $arguments = '//nologo "{0}"' -f $artifactPath
+        $process = Start-Process -FilePath $cscriptPath -ArgumentList $arguments -Wait -PassThru
+        $processExitCode = $process.ExitCode
+    }
+    elseif ($Trigger -eq 'JScript') {
         $padding = [Text.StringBuilder]::new()
         for ($index = 0; $index -lt 512; $index++) {
             [void]$padding.AppendLine(('var benignNoop{0:D4} = {0};' -f $index))
@@ -223,28 +266,43 @@ $blockEvents = @($asrEvents | Where-Object Id -eq 1121)
 $auditEvents = @($asrEvents | Where-Object Id -eq 1122)
 $markerCreated = Test-Path -LiteralPath $markerPath
 $artifactPresentAfterRun = if ($artifactPath) { Test-Path -LiteralPath $artifactPath } else { $null }
+$newNotepadProcesses = @(Get-Process notepad -ErrorAction SilentlyContinue | Where-Object { $_.Id -notin $existingNotepadIds })
+$notepadStarted = $newNotepadProcesses.Count -gt 0
+$protectedEffectAbsent = if ($Trigger -eq 'MicrosoftSample') { -not $notepadStarted } else { -not $markerCreated }
 
-if ($blockEvents.Count -gt 0 -and -not $markerCreated) {
+if ($blockEvents.Count -gt 0 -and $protectedEffectAbsent) {
     $resultState = 'Blocked'
-    $explanation = 'Defender logged Event 1121 for this rule and the decoded script did not create the benign marker.'
+    $explanation = if ($Trigger -eq 'MicrosoftSample') {
+        'Defender logged Event 1121 for this rule and the official sample did not start Notepad.'
+    }
+    else {
+        'Defender logged Event 1121 for this rule and the decoded script did not create the benign marker.'
+    }
 }
 elseif ($auditEvents.Count -gt 0) {
     $resultState = 'Audited'
     $explanation = 'Defender logged Event 1122 for this rule. Audit mode observes but does not block.'
 }
+elseif ($Trigger -eq 'MicrosoftSample' -and $notepadStarted -and $asrEvents.Count -eq 0) {
+    $resultState = 'Not triggered'
+    $explanation = 'The verified Microsoft sample started Notepad and no matching ASR event was found.'
+}
 elseif ($markerCreated -and $asrEvents.Count -eq 0) {
     $resultState = 'Not triggered'
     $explanation = 'The decoded script created the marker and no matching ASR event was found.'
 }
-else {
-    $resultState = 'Inconclusive'
-    $explanation = if ($antivirusEvents.Count -gt 0) {
-        'Antivirus detection events occurred without a matching target-rule event; Antivirus might have preempted ASR evaluation.'
-    }
     else {
-        'The marker and ASR event evidence do not establish a clean block, audit, or non-trigger result. Review the trigger and dependency data.'
+        $resultState = 'Inconclusive'
+        $explanation = if ($antivirusEvents.Count -gt 0) {
+            'Antivirus detection events occurred without a matching target-rule event; Antivirus might have preempted ASR evaluation.'
+        }
+        elseif ($triggerError) {
+            "The trigger did not complete: $triggerError"
+        }
+        else {
+            'The protected action and ASR event evidence do not establish a clean block, audit, or non-trigger result. Review the trigger and dependency data.'
+        }
     }
-}
 
 $asrEventSummary = @($asrEvents | ForEach-Object {
     [pscustomobject]@{
@@ -280,10 +338,14 @@ $result = [pscustomobject]@{
     TriggerDetail = $triggerDetail
     TriggerError = $triggerError
     ProcessExitCode = $processExitCode
+    OfficialSampleUrl = if ($Trigger -eq 'MicrosoftSample') { $OfficialSampleUrl } else { $null }
+    ExpectedSampleSha256 = if ($Trigger -eq 'MicrosoftSample') { $OfficialSampleSha256 } else { $null }
+    ActualSampleSha256 = $actualSampleSha256
     ArtifactPath = $artifactPath
     ArtifactPresentAfterRun = $artifactPresentAfterRun
     MarkerPath = $markerPath
     MarkerCreated = $markerCreated
+    NotepadStarted = $notepadStarted
     Result = $resultState
     Explanation = $explanation
     AsrEvents = $asrEventSummary

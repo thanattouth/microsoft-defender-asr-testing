@@ -33,25 +33,32 @@ The corrected runner completed with `MarkerCreated = True`, `Result = Not trigge
 
 Review of Microsoft's official sample showed a much larger obfuscated data structure followed by process launch behavior. The local primary trigger is now `xor-hex-child-process-v2`: it XOR-hex encodes a large deterministic blob and decodes it through `eval()`. The decoded behavior starts `cmd.exe` only to write the same marker. It performs no download, persistence, credential access, or security change.
 
+### 2026-09-02 - Synthetic triggers remain inconclusive
+
+- JScript v2 did not create its marker, but a matching Event 1121 was not reported, so the run cannot be credited as an ASR block.
+- The PowerShell fallback created its marker and returned `Not triggered`, confirming that the nested Base64 marker command did not cross the target rule's heuristic.
+
+Synthetic obfuscation is therefore retained only for diagnostics. The new primary path is Microsoft's official 63,501-byte JScript sample. The runner accepts an operator-provided copy or performs an explicitly authorized download from `demo.wd.microsoft.com`, then requires SHA-256 `cea7dbe4e275f248573c72ba75fff24362eb60143108dd909fb082f0464c70cb` before execution. The pinned sample's benign observable action is launching Notepad.
+
 ## Test design
 
-The primary trigger generates a large JScript blob encoded as XOR-hex and reconstructed through `eval()`. After decoding, the script starts `cmd.exe` only to write a marker under `%TEMP%\DefenderASRLab`. It downloads nothing and changes no persistence or security settings. The generated file has no Mark of the Web, so the separate rule for JavaScript or VBScript launching downloaded executable content should not own this event.
+The primary trigger uses the Microsoft-published obfuscated JScript sample referenced by the official ASR demonstration. The runner downloads it only when `-AllowOfficialDownload` is specified and refuses to execute it unless its SHA-256 matches the reviewed value. The expected non-blocked behavior is opening Notepad; the sample contains no destructive payload.
 
 The runner separately collects target-rule Event 1121/1122 and Antivirus detection/remediation Event 1116/1117. This prevents an Antivirus signature block from being incorrectly credited to the ASR rule.
 
-### Primary plan - JScript
+### Primary plan - Microsoft sample
 
 1. Confirm effective rule mode, Defender health, cloud protection, script scanning, and AMSI presence.
-2. Generate the harmless XOR-hex `.js` artifact locally without Mark of the Web.
-3. Execute it with `cscript.exe` and wait for Defender evaluation.
+2. Download the official sample only with explicit operator authorization, or use a supplied local copy.
+3. Verify its pinned SHA-256 before executing it with `cscript.exe`.
 4. Correlate ASR events by GUID and separately record Antivirus events.
-5. Confirm whether the decoded script created its marker and save JSON evidence.
+5. Confirm whether Notepad started and save JSON evidence.
 
-### Fallback plan - PowerShell
+### Diagnostic fallbacks
 
-If Windows Script Host is disabled or the JScript heuristic does not trigger, use the PowerShell fallback. It starts Windows PowerShell with an `EncodedCommand` containing a second Base64 layer. The decoded command only writes the same benign marker.
+The locally generated XOR-hex JScript and nested Base64 PowerShell marker tests remain available as `-Trigger JScript` and `-Trigger PowerShell`. Both failed to trigger on the first test endpoint, so they must not replace the official sample as proof of enforcement.
 
-If both local triggers are inconclusive, compare with Microsoft's official `TestFile_ScriptObfuscatedContent_5BEB7EFE-FD9A-4556-801D-275E5FFC04CC.js`. Use it only on the test endpoint and account for Antivirus quarantine or Protection History entries before concluding that ASR fired.
+Microsoft warns that Defender Antivirus can detect or quarantine demonstration files before the intended ASR rule evaluates them. The runner does not create exclusions. Event 1116/1117 without the target Event 1121 remains `Inconclusive` for this rule.
 
 ## Run on Windows
 
@@ -62,17 +69,22 @@ Prerequisites:
 - Cloud-delivered protection enabled
 - AMSI and Defender script scanning active
 - Target ASR rule deployed in Block mode
+- All Notepad windows closed, so the runner can reliably detect whether the sample starts it
 
-Run the primary JScript test from the cloned repository:
+Run the primary official-sample test from the cloned repository:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\rules\03-obfuscated-scripts\Invoke-ASRObfuscatedScriptTest.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\rules\03-obfuscated-scripts\Invoke-ASRObfuscatedScriptTest.ps1" `
+  -Trigger MicrosoftSample `
+  -AllowOfficialDownload
 ```
 
-PowerShell fallback:
+To use a copy downloaded manually from Microsoft's documented URL:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\rules\03-obfuscated-scripts\Invoke-ASRObfuscatedScriptTest.ps1" -Trigger PowerShell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\rules\03-obfuscated-scripts\Invoke-ASRObfuscatedScriptTest.ps1" `
+  -Trigger MicrosoftSample `
+  -MicrosoftSamplePath 'C:\Lab\TestFile_ScriptObfuscatedContent_5BEB7EFE-FD9A-4556-801D-275E5FFC04CC.js'
 ```
 
 The execution-policy override applies only to the test runner process. The script does not modify Defender or tenant policy.
@@ -81,13 +93,13 @@ The execution-policy override applies only to the test runner process. The scrip
 
 A successful Block validation requires both:
 
-1. `Result` is `Blocked` and `MarkerCreated` is `False`.
+1. `Result` is `Blocked` and `NotepadStarted` is `False`.
 2. Event ID `1121` exists after the test start time and contains GUID `5beb7efe-fd9a-4556-801d-275e5ffc04cc`.
 
 Primary evidence is saved to:
 
 ```text
-%TEMP%\DefenderASRLab\03-obfuscated-scripts\result-JScript.json
+%TEMP%\DefenderASRLab\03-obfuscated-scripts\result-MicrosoftSample.json
 ```
 
 Manual local check:
@@ -118,14 +130,16 @@ For Microsoft Defender XDR, open **Hunting > Advanced hunting** and run [advance
 
 | Observation | Interpretation | Next action |
 |---|---|---|
-| Event 1121 + marker absent | Target ASR rule blocked execution | Preserve JSON, notification, and portal evidence. |
-| Event 1122 + marker exists | Endpoint is auditing | Check effective policy assignment and conflicts. |
-| Event 1116/1117 but no Event 1121 | Antivirus preempted the target ASR rule | Review Protection History and use the alternate local trigger. |
-| No event + marker exists | Obfuscation heuristic did not trigger | Confirm `ArtifactVersion` is `xor-hex-child-process-v2`, then use the PowerShell fallback. |
-| No event + marker absent | Trigger failed before conclusive evaluation | Review `TriggerError`, `ProcessExitCode`, script scanning, and application-control policy. |
+| Event 1121 + Notepad absent | Target ASR rule blocked the official sample | Preserve JSON, notification, and portal evidence. |
+| Event 1122 + Notepad starts | Endpoint is auditing | Check effective policy assignment and conflicts. |
+| Event 1116/1117 but no Event 1121 | Antivirus preempted the target ASR rule | Preserve the run as `Inconclusive`; review Protection History and do not create an exclusion merely to force the test. |
+| Official sample hash mismatch | Published content changed or the file is not the reviewed sample | Do not execute it; re-download and review before updating the pinned hash. |
+| `TriggerError` asks you to close Notepad | The runner cannot reliably measure the official sample's visible action | Close every Notepad window and rerun. |
+| No event + Notepad starts | Target ASR rule did not trigger | Confirm effective rule state, cloud protection, AMSI, and exclusions. |
+| No event + Notepad absent | Download, Antivirus, WSH, or another control stopped the sample first | Review `TriggerError`, Event 1116/1117, Protection History, and application-control policy. |
 | `CloudProtectionEnabled` is `False` | Required dependency is missing | Correct tenant/device configuration before retesting. |
 | Local Event 1121 but portal is empty | Local enforcement succeeded; ingestion is pending or onboarding needs review | Wait, then run Advanced Hunting and check device onboarding. |
-| `.Count` property error | An outdated runner did not normalize empty/single event results | Pull the latest revision and rerun; no policy change is needed. |
+| Synthetic PowerShell marker exists with `Not triggered` | Expected observed limitation of the diagnostic fallback | Use the verified Microsoft sample instead. |
 
 ## Cleanup
 
