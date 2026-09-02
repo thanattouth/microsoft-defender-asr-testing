@@ -56,6 +56,20 @@ Open Windows PowerShell in the cloned repository. Administrator rights are usefu
 .\rules\01-adobe-reader-child-process\Invoke-ASRAdobeReaderChildProcessTest.ps1
 ```
 
+If PowerShell reports that running scripts is disabled, use a one-process execution-policy override. It expires when that PowerShell process closes and does not change `LocalMachine` or `CurrentUser` policy:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\rules\01-adobe-reader-child-process\Invoke-ASRAdobeReaderChildProcessTest.ps1"
+```
+
+If organization policy still prevents execution, inspect the effective precedence and preserve the output for troubleshooting:
+
+```powershell
+Get-ExecutionPolicy -List
+```
+
+Do not change `MachinePolicy`, `UserPolicy`, or `LocalMachine` for this test.
+
 In Adobe, click `RUN HARMLESS ASR TEST`, approve Adobe's external-application prompt for this lab PDF if shown, wait about 10 seconds, then return to PowerShell and press Enter.
 
 If Adobe is installed in a nonstandard location:
@@ -120,6 +134,7 @@ For Microsoft Defender XDR, open **Hunting > Advanced hunting** and run [advance
 | No event + Notepad absent | Adobe likely stopped the action first | Use the Browser fallback and verify the real process tree. |
 | Local Event 1121 but no portal alert | Local block succeeded; alert prerequisites or ingestion may differ | Run the hunting query and check cloud protection level/onboarding. |
 | PDF opens in Edge/Chrome | Wrong PDF handler; test is invalid | Use `-AdobePath` and rerun. |
+| Running scripts is disabled | PowerShell execution policy stopped the runner before the ASR test | Use the one-process `-ExecutionPolicy Bypass` command above; if blocked again, inspect `Get-ExecutionPolicy -List`. |
 
 ## Cleanup
 
