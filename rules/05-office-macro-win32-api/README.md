@@ -26,6 +26,12 @@ The reviewed official sample is 170,427 bytes with SHA-256:
 f0a906263537453e7860bb5fc0663eadd7e1f83f51b1290c473b069dc198d42c
 ```
 
+## Observed validation
+
+### 2026-09-02 - Official sample validated locally
+
+The operator selected `B` after Word displayed a privilege-related message and Windows displayed a block notification. The runner then recorded Event 1121 with the exact target Rule ID `92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b`. The matching Event 1121 is the decisive evidence and satisfies the local Block criteria. A notification appeared on this endpoint even though Microsoft's support table doesn't require one for this rule. Microsoft Defender XDR portal ingestion remains pending.
+
 ## Objective and safety boundary
 
 The primary path downloads Microsoft's official demonstration document only when `-AllowOfficialDownload` is provided. Before Word opens it, the runner requires the pinned SHA-256. The document demonstrates an Office VBA macro attempting a Win32 API call; it is used only on the disposable test endpoint.

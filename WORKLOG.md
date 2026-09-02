@@ -6,7 +6,7 @@
 | 02 - Block process creations originating from PsExec and WMI commands | Ready | Validated locally / Portal pending | Block notification appeared, the runner returned `Blocked`, and a detailed local Defender event was recorded. Waiting for Defender portal telemetry. |
 | 03 - Block execution of potentially obfuscated scripts | Ready | Validated locally / Portal pending | The pinned Microsoft sample returned `Blocked`, produced target-rule Event 1121, and showed a block notification. The protected Notepad action did not start; `MarkerCreated = False` is expected for this trigger. |
 | 04 - Block persistence through WMI event subscription | Ready | Validated locally / Portal pending | The primary test returned `Blocked`, produced target-rule Event 1121 and a block notification, and completed cleanup with `CleanupSucceeded = True`. |
-| 05 - Block Win32 API calls from Office macros | Ready | Windows validation pending | Primary uses Microsoft's hash-pinned DOCM sample with manual Word interaction. Manual-file, Word-path, and one-file Mark-of-the-Web fallbacks are documented without changing Office or Defender policy. |
+| 05 - Block Win32 API calls from Office macros | Ready | Validated locally / Portal pending | The official DOCM sample produced Event 1121 with target GUID `92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b` and a block notification. Word also displayed a privilege-related message; the matching rule event is the decisive evidence. |
 
 ## Working convention
 
