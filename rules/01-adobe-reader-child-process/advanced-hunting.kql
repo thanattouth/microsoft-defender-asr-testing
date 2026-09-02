@@ -1,0 +1,17 @@
+let RuleActions = dynamic([
+    "AsrAdobeReaderChildProcessBlocked",
+    "AsrAdobeReaderChildProcessAudited"
+]);
+DeviceEvents
+| where Timestamp > ago(7d)
+| where ActionType in (RuleActions)
+| project Timestamp,
+          DeviceName,
+          ActionType,
+          FileName,
+          FolderPath,
+          InitiatingProcessFileName,
+          InitiatingProcessCommandLine,
+          AccountName,
+          AdditionalFields
+| order by Timestamp desc
