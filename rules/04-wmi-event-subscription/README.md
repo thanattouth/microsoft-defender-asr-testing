@@ -32,6 +32,12 @@ The test attempts to register one temporary permanent WMI event subscription in 
 
 The runner never creates the randomized process, so the consumer is never invoked. It changes no security policy and uses no network connection. The subscription exists only long enough to measure enforcement. A `finally` block removes the binding, consumer, and filter in that order and verifies that no test objects remain.
 
+## Observed validation
+
+### 2026-09-02 - Primary trigger validated locally
+
+The PowerShell WMI test returned `Result = Blocked`, recorded a matching target-rule Event 1121, displayed a Windows block notification, and reported `CleanupSucceeded = True`. This satisfies the documented local success criteria. Microsoft Defender XDR portal ingestion remains pending.
+
 ## Test plan
 
 ### Primary - PowerShell WMI API

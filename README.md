@@ -10,5 +10,6 @@ Safe, evidence-driven validation cases for Microsoft Defender Attack Surface Red
 - [Rule 02: Block process creations originating from PsExec and WMI commands](rules/02-psexec-wmi-process-creation/README.md)
 - [Rule 03: Block execution of potentially obfuscated scripts](rules/03-obfuscated-scripts/README.md)
 - [Rule 04: Block persistence through WMI event subscription](rules/04-wmi-event-subscription/README.md)
+- [Rule 05: Block Win32 API calls from Office macros](rules/05-office-macro-win32-api/README.md)
 
 Every test uses inert behavior, records local and Microsoft Defender XDR evidence, and distinguishes a genuine block from an upstream application restriction.

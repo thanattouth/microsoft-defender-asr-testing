@@ -1,0 +1,18 @@
+let RuleActions = dynamic([
+    "AsrOfficeMacroWin32ApiCallsBlocked",
+    "AsrOfficeMacroWin32ApiCallsAudited"
+]);
+DeviceEvents
+| where Timestamp > ago(7d)
+| where ActionType in (RuleActions)
+| project Timestamp,
+          DeviceName,
+          ActionType,
+          FileName,
+          FolderPath,
+          ProcessCommandLine,
+          InitiatingProcessFileName,
+          InitiatingProcessCommandLine,
+          AccountName,
+          AdditionalFields
+| order by Timestamp desc
