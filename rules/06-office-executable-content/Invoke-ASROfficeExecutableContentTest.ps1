@@ -2,8 +2,13 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('AdodbStream', 'VbaBinary')]
-    [string]$Trigger = 'AdodbStream',
+    [string]$MicrosoftSamplePath,
+
+    [switch]$AllowOfficialDownload,
+
+    [switch]$AllowUnblockSample,
+
+    [switch]$AcknowledgeOfficialSampleRisk,
 
     [string]$WordPath,
 
@@ -21,6 +26,12 @@ $ErrorActionPreference = 'Stop'
 $RuleId = '3b576869-a4ec-4529-8536-b80a7769e899'
 $RuleName = 'Block Office applications from creating executable content'
 $DefenderLog = 'Microsoft-Windows-Windows Defender/Operational'
+$OfficialSampleUrl = 'https://demo.wd.microsoft.com/Content/TestFile_Block_Office_applications_from_creating_executable_content_3b576869-a4ec-4529-8536-b80a7769e899.docm'
+$OfficialSampleSha256 = '785b85b4206a1bff7555df66850309e366d76951e037fe1a8d4f50caa5c424a0'
+$DownloadedSamplePath = Join-Path $OutputDirectory 'Microsoft-official-rule06.docm'
+$KnownPayloadPath = Join-Path $env:TEMP 'lockysample.exe'
+$CleanupManifestPath = Join-Path $OutputDirectory 'cleanup-manifest.json'
+$ResultPath = Join-Path $OutputDirectory 'result-MicrosoftSample.json'
 
 function Get-ASRRuleState {
     param(
@@ -30,13 +41,7 @@ function Get-ASRRuleState {
 
     $ids = @($Preference.AttackSurfaceReductionRules_Ids)
     $actions = @($Preference.AttackSurfaceReductionRules_Actions)
-    $actionNames = @{
-        0 = 'Disabled'
-        1 = 'Block'
-        2 = 'Audit'
-        5 = 'Not configured'
-        6 = 'Warn'
-    }
+    $actionNames = @{ 0 = 'Disabled'; 1 = 'Block'; 2 = 'Audit'; 5 = 'Not configured'; 6 = 'Warn' }
 
     for ($index = 0; $index -lt [Math]::Min($ids.Count, $actions.Count); $index++) {
         if ([string]$ids[$index] -eq $Id) {
@@ -48,11 +53,7 @@ function Get-ASRRuleState {
                 "Unknown ($numericAction)"
             }
 
-            return [pscustomobject]@{
-                Id = $Id
-                Action = $displayAction
-                ActionValue = $numericAction
-            }
+            return [pscustomobject]@{ Id = $Id; Action = $displayAction; ActionValue = $numericAction }
         }
     }
 
@@ -125,10 +126,16 @@ function Get-WordExecutablePath {
     return $null
 }
 
-function ConvertTo-VbaStringLiteral {
-    param([Parameter(Mandatory)][string]$Value)
+function Test-MarkOfTheWeb {
+    param([Parameter(Mandatory)][string]$Path)
 
-    return $Value.Replace('"', '""')
+    try {
+        $stream = Get-Item -LiteralPath $Path -Stream Zone.Identifier -ErrorAction Stop
+        return $null -ne $stream
+    }
+    catch {
+        return $false
+    }
 }
 
 function ConvertTo-EventSummary {
@@ -144,28 +151,48 @@ function ConvertTo-EventSummary {
     })
 }
 
-$sourcePayloadPath = Join-Path $OutputDirectory 'source-marker-only.exe'
-$droppedPayloadPath = Join-Path $OutputDirectory 'office-created-marker-only.exe'
-$markerPath = Join-Path $OutputDirectory 'payload-ran.txt'
-$macroPath = Join-Path $OutputDirectory "Rule06-$Trigger.bas"
-$resultPath = Join-Path $OutputDirectory "result-$Trigger.json"
-
 if ($CleanupOnly) {
-    foreach ($path in @($sourcePayloadPath, $droppedPayloadPath, $markerPath)) {
-        if (Test-Path -LiteralPath $path) {
-            Remove-Item -LiteralPath $path -Force
+    $cleanupOnlyErrors = [Collections.Generic.List[string]]::new()
+    $cleanupOnlyTargets = @($DownloadedSamplePath)
+
+    if (Test-Path -LiteralPath $CleanupManifestPath -PathType Leaf) {
+        try {
+            $cleanupManifest = Get-Content -LiteralPath $CleanupManifestPath -Raw | ConvertFrom-Json
+            if (-not [bool]$cleanupManifest.KnownPayloadExistedBefore -and $cleanupManifest.KnownPayloadPath) {
+                $cleanupOnlyTargets += [string]$cleanupManifest.KnownPayloadPath
+            }
+        }
+        catch {
+            $cleanupOnlyErrors.Add("Cleanup manifest could not be read: $($_.Exception.Message)")
         }
     }
-    Write-Host 'Cleanup complete. No generated executable or marker artifact remains.'
+
+    foreach ($path in @($cleanupOnlyTargets | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath $path) {
+            try { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
+            catch { $cleanupOnlyErrors.Add("$path cleanup failed: $($_.Exception.Message)") }
+        }
+    }
+
+    if ($cleanupOnlyErrors.Count -eq 0 -and (Test-Path -LiteralPath $CleanupManifestPath)) {
+        Remove-Item -LiteralPath $CleanupManifestPath -Force
+    }
+
+    if ($cleanupOnlyErrors.Count -gt 0) {
+        $cleanupOnlyErrors | ForEach-Object { Write-Warning $_ }
+        throw 'Cleanup is incomplete. Close Word and retry -CleanupOnly.'
+    }
+
+    Write-Host 'Cleanup complete. Runner-downloaded sample and tracked payload are absent.'
     return
 }
 
 foreach ($requiredCommand in @(
-    'Add-Type',
     'Get-MpPreference',
     'Get-MpComputerStatus',
     'Get-WinEvent',
-    'Get-FileHash'
+    'Get-FileHash',
+    'Invoke-WebRequest'
 )) {
     if (-not (Get-Command $requiredCommand -ErrorAction SilentlyContinue)) {
         throw "$requiredCommand is unavailable. Run this test with Windows PowerShell 5.1 on a supported Windows device."
@@ -174,10 +201,8 @@ foreach ($requiredCommand in @(
 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 
-foreach ($path in @($sourcePayloadPath, $droppedPayloadPath, $markerPath)) {
-    if (Test-Path -LiteralPath $path) {
-        Remove-Item -LiteralPath $path -Force
-    }
+if (Test-Path -LiteralPath $CleanupManifestPath -PathType Leaf) {
+    throw "A prior cleanup manifest exists at $CleanupManifestPath. Close Word and run this script with -CleanupOnly before starting another test."
 }
 
 $preference = Get-MpPreference
@@ -187,15 +212,21 @@ $rpcService = Get-Service -Name RpcSs -ErrorAction SilentlyContinue
 $rpcServiceStatus = if ($rpcService) { [string]$rpcService.Status } else { 'Unavailable' }
 $resolvedWordPath = Get-WordExecutablePath -OverridePath $WordPath
 $existingWordIds = @(Get-Process WINWORD -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+$knownPayloadExistedBefore = Test-Path -LiteralPath $KnownPayloadPath
 $startedAt = Get-Date
-$triggerError = $null
+$artifactPath = $null
+$downloadedByRunner = $false
+$actualSampleSha256 = $null
+$markOfTheWebBefore = $null
+$markOfTheWebAfter = $null
+$sampleUnblockedByRunner = $false
 $wordProcessId = $null
 $wordProcessStarted = $false
 $operatorObservation = 'Unknown'
-$sourcePayloadSha256 = $null
-$droppedPayloadSha256 = $null
-$droppedPayloadCreated = $false
-$payloadRan = $false
+$triggerError = $null
+$knownPayloadCreated = $false
+$knownPayloadSha256 = $null
+$artifactPresentBeforeCleanup = $false
 $cleanupErrors = [Collections.Generic.List[string]]::new()
 
 Write-Host "Rule: $RuleName"
@@ -205,19 +236,24 @@ Write-Host "Defender AV enabled: $($defenderStatus.AntivirusEnabled)"
 Write-Host "Real-time protection enabled: $($defenderStatus.RealTimeProtectionEnabled)"
 Write-Host "RPC service: $rpcServiceStatus"
 Write-Host "Word path: $resolvedWordPath"
-Write-Host "Trigger: $Trigger"
-
-if ($ruleState.Action -ne 'Block') {
-    Write-Warning "This endpoint reports '$($ruleState.Action)' rather than Block for the target rule."
-}
-if (-not $defenderStatus.AntivirusEnabled -or -not $defenderStatus.RealTimeProtectionEnabled) {
-    Write-Warning 'Microsoft Defender Antivirus or real-time protection is not active; the result may be inconclusive.'
-}
-if ($null -eq $rpcService -or $rpcService.Status -ne 'Running') {
-    Write-Warning 'The RPC service is not running. Microsoft lists RPC as a dependency for this rule.'
-}
+Write-Host "Official sample SHA-256: $OfficialSampleSha256"
 
 try {
+    if (-not $AcknowledgeOfficialSampleRisk) {
+        throw 'The official document can download and attempt to run lockysample.exe. Rerun with -AcknowledgeOfficialSampleRisk only on the disposable test endpoint.'
+    }
+    if ($ruleState.Action -ne 'Block') {
+        throw "Safety stop: this endpoint reports '$($ruleState.Action)' rather than Block for the target rule."
+    }
+    if (-not $defenderStatus.AntivirusEnabled -or -not $defenderStatus.RealTimeProtectionEnabled) {
+        throw 'Safety stop: Microsoft Defender Antivirus and real-time protection must both be active.'
+    }
+    if ($null -eq $rpcService -or $rpcService.Status -ne 'Running') {
+        throw 'Safety stop: RPC must be running because Microsoft lists it as a dependency for this rule.'
+    }
+    if ($knownPayloadExistedBefore) {
+        throw "Safety stop: $KnownPayloadPath existed before this run. The runner will not overwrite or delete a pre-existing file."
+    }
     if ($existingWordIds.Count -gt 0) {
         throw 'Close every Microsoft Word window before running this test.'
     }
@@ -225,104 +261,72 @@ try {
         throw 'Microsoft Word was not found. Install desktop Word or provide its full WINWORD.EXE path with -WordPath.'
     }
 
-    $className = "DefenderASRRule06Payload_$([Guid]::NewGuid().ToString('N'))"
-    $csharpMarkerPath = $markerPath.Replace('"', '""')
-    $sourceCode = @"
-using System;
-using System.IO;
-
-public static class $className
-{
-    [STAThread]
-    public static void Main()
-    {
-        File.WriteAllText(@"$csharpMarkerPath", "defender-asr-rule-06-benign-marker");
-    }
-}
-"@
-    Add-Type -TypeDefinition $sourceCode -Language CSharp -OutputAssembly $sourcePayloadPath -OutputType WindowsApplication | Out-Null
-    if (-not (Test-Path -LiteralPath $sourcePayloadPath -PathType Leaf)) {
-        throw 'The marker-only test executable was not generated.'
-    }
-    $sourcePayloadSha256 = (Get-FileHash -LiteralPath $sourcePayloadPath -Algorithm SHA256).Hash.ToLowerInvariant()
-
-    $vbaSourcePath = ConvertTo-VbaStringLiteral -Value $sourcePayloadPath
-    $vbaDroppedPath = ConvertTo-VbaStringLiteral -Value $droppedPayloadPath
-    if ($Trigger -eq 'AdodbStream') {
-        $macroBody = @"
-    Dim binaryStream As Object
-    Set binaryStream = CreateObject("ADODB.Stream")
-    binaryStream.Type = 1
-    binaryStream.Open
-    binaryStream.LoadFromFile sourcePath
-    binaryStream.SaveToFile droppedPath, 2
-    binaryStream.Close
-"@
+    if ($MicrosoftSamplePath) {
+        if (-not (Test-Path -LiteralPath $MicrosoftSamplePath -PathType Leaf)) {
+            throw "Microsoft sample was not found at: $MicrosoftSamplePath"
+        }
+        $artifactPath = (Resolve-Path -LiteralPath $MicrosoftSamplePath).Path
     }
     else {
-        $macroBody = @"
-    Dim inputHandle As Integer
-    Dim outputHandle As Integer
-    Dim payload() As Byte
-    inputHandle = FreeFile
-    Open sourcePath For Binary Access Read As #inputHandle
-    ReDim payload(0 To LOF(inputHandle) - 1)
-    Get #inputHandle, , payload
-    Close #inputHandle
-    outputHandle = FreeFile
-    Open droppedPath For Binary Access Write As #outputHandle
-    Put #outputHandle, , payload
-    Close #outputHandle
-"@
+        if (-not $AllowOfficialDownload) {
+            throw 'Specify -AllowOfficialDownload or provide -MicrosoftSamplePath. No download was performed.'
+        }
+        $artifactPath = $DownloadedSamplePath
+        if (Test-Path -LiteralPath $artifactPath) {
+            Remove-Item -LiteralPath $artifactPath -Force
+        }
+        $downloadedByRunner = $true
     }
 
-    $macroContent = @"
-Attribute VB_Name = "Rule06BenignTest"
-Option Explicit
+    $cleanupManifest = [pscustomobject]@{
+        CreatedAt = Get-Date
+        DownloadedSamplePath = $DownloadedSamplePath
+        DownloadedByRunner = $downloadedByRunner
+        KnownPayloadPath = $KnownPayloadPath
+        KnownPayloadExistedBefore = $knownPayloadExistedBefore
+    }
+    $cleanupManifest | ConvertTo-Json | Set-Content -LiteralPath $CleanupManifestPath -Encoding utf8
 
-Public Sub RunRule06Test()
-    On Error GoTo TestStopped
-    Dim sourcePath As String
-    Dim droppedPath As String
-    Dim taskId As Variant
-    sourcePath = "$vbaSourcePath"
-    droppedPath = "$vbaDroppedPath"
-$macroBody
-    taskId = Shell(Chr`$(34) & droppedPath & Chr`$(34), vbHide)
-    MsgBox "The benign marker-only executable was allowed to start.", vbInformation, "ASR Rule 06 Test"
-    Exit Sub
+    if ($downloadedByRunner) {
+        Invoke-WebRequest -UseBasicParsing -Uri $OfficialSampleUrl -OutFile $artifactPath
+    }
 
-TestStopped:
-    MsgBox "The test stopped: " & Err.Number & " - " & Err.Description, vbExclamation, "ASR Rule 06 Test"
-End Sub
-"@
-    [IO.File]::WriteAllText($macroPath, $macroContent, [Text.Encoding]::ASCII)
+    $actualSampleSha256 = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualSampleSha256 -ne $OfficialSampleSha256) {
+        throw "Official sample SHA-256 mismatch. Expected $OfficialSampleSha256 but received $actualSampleSha256. The file was not opened."
+    }
 
-    $wordProcess = Start-Process -FilePath $resolvedWordPath -ArgumentList '/n' -PassThru
+    $markOfTheWebBefore = Test-MarkOfTheWeb -Path $artifactPath
+    if ($AllowUnblockSample -and $markOfTheWebBefore) {
+        if (-not (Get-Command Unblock-File -ErrorAction SilentlyContinue)) {
+            throw 'Unblock-File is unavailable, so the Mark of the Web was not removed.'
+        }
+        Unblock-File -LiteralPath $artifactPath
+        $sampleUnblockedByRunner = $true
+    }
+    $markOfTheWebAfter = Test-MarkOfTheWeb -Path $artifactPath
+
+    $wordProcess = Start-Process -FilePath $resolvedWordPath -ArgumentList @('/n', "`"$artifactPath`"") -PassThru
     $wordProcessId = $wordProcess.Id
     Start-Sleep -Seconds 2
     $wordProcessStarted = $null -ne (Get-Process -Id $wordProcessId -ErrorAction SilentlyContinue)
     if (-not $wordProcessStarted) {
-        throw 'Microsoft Word exited before the macro could be imported.'
+        throw 'Microsoft Word exited before the operator could run the sample.'
     }
 
     Write-Host ''
-    Write-Host 'A blank Word instance is open. Perform these steps without saving the document:' -ForegroundColor Cyan
-    Write-Host '  1. Press Alt+F11 to open the VBA editor.'
-    Write-Host '  2. Select File > Import File and import:'
-    Write-Host "     $macroPath"
-    Write-Host '  3. Place the cursor inside RunRule06Test and press F5.'
-    Write-Host '  4. Observe the Word/Defender result, then close Word without saving.'
-    Write-Host 'Enter one result after closing Word:' -ForegroundColor Cyan
-    Write-Host '  B = a block notification or macro error appeared'
-    Write-Host '  R = the benign payload ran and created its marker'
-    Write-Host '  O = Office policy prevented VBA import or macro execution'
+    Write-Warning 'This official Microsoft sample can download and attempt to run lockysample.exe if ASR does not block it.'
+    Write-Host 'In Word, enable editing/content only for this verified document. Do not select a real data folder if prompted.' -ForegroundColor Cyan
+    Write-Host 'Observe the result, close Word without saving, then return here immediately.' -ForegroundColor Cyan
+    Write-Host '  B = an Action blocked notification or block/error appeared'
+    Write-Host '  R = lockysample.exe started or the demonstration continued without an ASR block'
+    Write-Host '  O = Protected View or Office macro policy prevented the macro from starting'
     Write-Host '  U = unsure'
     $operatorInputRaw = Read-Host 'Result [B/R/O/U]'
     $operatorInput = if ($operatorInputRaw) { $operatorInputRaw.Trim().ToUpperInvariant() } else { 'U' }
     $operatorObservation = switch ($operatorInput) {
         'B' { 'BlockObserved' }
-        'R' { 'PayloadRan' }
+        'R' { 'MacroOrPayloadRan' }
         'O' { 'OfficePreempted' }
         default { 'Unknown' }
     }
@@ -339,43 +343,54 @@ $otherAsrEvents = @($allAsrEvents | Where-Object { $_.ToXml() -notmatch [regex]:
 $antivirusEvents = @(Get-AntivirusEvents -Since $startedAt)
 $blockEvents = @($targetAsrEvents | Where-Object Id -eq 1121)
 $auditEvents = @($targetAsrEvents | Where-Object Id -eq 1122)
-$droppedPayloadCreated = Test-Path -LiteralPath $droppedPayloadPath
-$payloadRan = Test-Path -LiteralPath $markerPath
-if ($droppedPayloadCreated) {
+$artifactPresentBeforeCleanup = if ($artifactPath) { Test-Path -LiteralPath $artifactPath } else { $false }
+$knownPayloadCreated = -not $knownPayloadExistedBefore -and (Test-Path -LiteralPath $KnownPayloadPath)
+
+if ($knownPayloadCreated) {
     try {
-        $droppedPayloadSha256 = (Get-FileHash -LiteralPath $droppedPayloadPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+        $knownPayloadSha256 = (Get-FileHash -LiteralPath $KnownPayloadPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
     }
     catch {
-        $triggerError = "The Office-created executable disappeared before hashing: $($_.Exception.Message)"
-        $droppedPayloadCreated = Test-Path -LiteralPath $droppedPayloadPath
+        $triggerError = "The tracked payload disappeared before hashing: $($_.Exception.Message)"
+        $knownPayloadCreated = Test-Path -LiteralPath $KnownPayloadPath
     }
 }
 
-foreach ($path in @($sourcePayloadPath, $droppedPayloadPath)) {
+$cleanupTargets = @()
+if ($downloadedByRunner) { $cleanupTargets += $DownloadedSamplePath }
+if (-not $knownPayloadExistedBefore) { $cleanupTargets += $KnownPayloadPath }
+
+foreach ($path in @($cleanupTargets | Select-Object -Unique)) {
     if (Test-Path -LiteralPath $path) {
         try { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
         catch { $cleanupErrors.Add("$path cleanup failed: $($_.Exception.Message)") }
     }
 }
-$remainingExecutableArtifacts = @(@($sourcePayloadPath, $droppedPayloadPath) |
-    Where-Object { Test-Path -LiteralPath $_ })
-$cleanupSucceeded = $remainingExecutableArtifacts.Count -eq 0 -and $cleanupErrors.Count -eq 0
+
+$remainingTrackedArtifacts = @($cleanupTargets | Select-Object -Unique | Where-Object {
+    Test-Path -LiteralPath $_
+})
+$cleanupSucceeded = $remainingTrackedArtifacts.Count -eq 0 -and $cleanupErrors.Count -eq 0
+
+if ($cleanupSucceeded -and (Test-Path -LiteralPath $CleanupManifestPath)) {
+    Remove-Item -LiteralPath $CleanupManifestPath -Force
+}
 
 if (-not $cleanupSucceeded) {
     $resultState = 'Inconclusive'
-    $explanation = 'Generated executable cleanup is incomplete. Run -CleanupOnly before another test.'
+    $explanation = 'Tracked official-sample artifacts remain. Close Word and run -CleanupOnly immediately.'
 }
-elseif ($blockEvents.Count -gt 0 -and -not $payloadRan) {
+elseif ($blockEvents.Count -gt 0) {
     $resultState = 'Blocked'
-    $explanation = 'Defender logged Event 1121 for the target rule and the marker-only payload did not run.'
+    $explanation = 'Defender logged Event 1121 for the target Office executable-content rule.'
 }
 elseif ($auditEvents.Count -gt 0) {
     $resultState = 'Audited'
-    $explanation = 'Defender logged Event 1122 for the target rule. The endpoint observed but did not enforce this behavior.'
+    $explanation = 'Defender logged Event 1122 for the target Office executable-content rule.'
 }
-elseif ($targetAsrEvents.Count -eq 0 -and $payloadRan) {
+elseif ($targetAsrEvents.Count -eq 0 -and $operatorObservation -eq 'MacroOrPayloadRan') {
     $resultState = 'Not triggered'
-    $explanation = 'The Office-created marker-only executable ran, but no matching target-rule event was found.'
+    $explanation = 'The official demonstration continued or its payload started, but no matching target-rule event was found.'
 }
 else {
     $resultState = 'Inconclusive'
@@ -383,19 +398,19 @@ else {
         $explanation = 'A different ASR rule fired before the target-rule result could be established. Review OtherAsrEvents.'
     }
     elseif ($antivirusEvents.Count -gt 0) {
-        $explanation = 'Antivirus detected or remediated an artifact without a matching target-rule event.'
+        $explanation = 'Antivirus detected or remediated the sample without a matching target-rule event.'
     }
     elseif ($operatorObservation -eq 'OfficePreempted') {
-        $explanation = 'Office policy prevented the macro from reaching the executable-content behavior.'
+        $explanation = 'Protected View or Office macro policy prevented the macro from reaching the protected behavior.'
     }
     elseif ($triggerError) {
-        $explanation = "The test did not reach conclusive ASR evaluation: $triggerError"
+        $explanation = "The official sample did not reach conclusive ASR evaluation: $triggerError"
     }
     elseif ($operatorObservation -eq 'BlockObserved') {
         $explanation = 'A block-like result was observed, but no matching target-rule Event 1121 was found.'
     }
     else {
-        $explanation = 'The artifact and event evidence do not establish a clean block, audit, or non-trigger result.'
+        $explanation = 'The event and operator evidence do not establish a clean block, audit, or non-trigger result.'
     }
 }
 
@@ -411,19 +426,25 @@ $result = [pscustomobject]@{
     WordPath = $resolvedWordPath
     WordProcessId = $wordProcessId
     WordProcessStarted = $wordProcessStarted
-    Trigger = $Trigger
-    ArtifactVersion = 'locally-compiled-marker-only-dotnet-v1'
-    MacroPath = $macroPath
-    SourcePayloadSha256 = $sourcePayloadSha256
-    DroppedPayloadCreatedBeforeCleanup = $droppedPayloadCreated
-    DroppedPayloadSha256 = $droppedPayloadSha256
-    PayloadMarkerPath = $markerPath
-    PayloadRan = $payloadRan
+    ArtifactVersion = 'microsoft-official-docm-sha256-pinned'
+    OfficialSampleUrl = $OfficialSampleUrl
+    ExpectedSampleSha256 = $OfficialSampleSha256
+    ActualSampleSha256 = $actualSampleSha256
+    ArtifactPath = $artifactPath
+    DownloadedByRunner = $downloadedByRunner
+    ArtifactPresentBeforeCleanup = $artifactPresentBeforeCleanup
+    MarkOfTheWebBefore = $markOfTheWebBefore
+    MarkOfTheWebAfter = $markOfTheWebAfter
+    SampleUnblockedByRunner = $sampleUnblockedByRunner
+    KnownPayloadPath = $KnownPayloadPath
+    KnownPayloadExistedBefore = $knownPayloadExistedBefore
+    KnownPayloadCreated = $knownPayloadCreated
+    KnownPayloadSha256 = $knownPayloadSha256
     OperatorObservation = $operatorObservation
     TriggerError = $triggerError
     CleanupSucceeded = $cleanupSucceeded
     CleanupErrors = @($cleanupErrors)
-    RemainingExecutableArtifacts = $remainingExecutableArtifacts
+    RemainingTrackedArtifacts = $remainingTrackedArtifacts
     Result = $resultState
     Explanation = $explanation
     AsrEvents = ConvertTo-EventSummary -Events $targetAsrEvents
@@ -431,10 +452,10 @@ $result = [pscustomobject]@{
     AntivirusEvents = ConvertTo-EventSummary -Events $antivirusEvents
 }
 
-$result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $resultPath -Encoding utf8
+$result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $ResultPath -Encoding utf8
 $result | Format-List
-Write-Host "Evidence saved to: $resultPath"
+Write-Host "Evidence saved to: $ResultPath"
 
 if (-not $cleanupSucceeded) {
-    Write-Warning "Cleanup is incomplete. Run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -CleanupOnly"
+    Write-Warning "Cleanup is incomplete. Close Word, then run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -CleanupOnly"
 }

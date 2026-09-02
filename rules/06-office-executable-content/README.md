@@ -6,7 +6,7 @@
 - GUID: `3b576869-a4ec-4529-8536-b80a7769e899`
 - Configured baseline: `Block`
 - Dependencies: Microsoft Defender Antivirus and RPC
-- Supported clients: Windows 10 version 1709 or later and Windows 11
+- Supported clients: Windows 10 version 1709 or later, Windows 11, and supported Windows Server versions
 - Advanced Hunting actions: `AsrExecutableOfficeContentBlocked`, `AsrExecutableOfficeContentAudited`
 - EDR alert expected: No
 - User notification supported: Yes
@@ -15,85 +15,118 @@
 
 Reviewed on 2026-09-02:
 
-- [Microsoft ASR rule reference](https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference) confirms the GUID, dependencies, supported platforms, Advanced Hunting actions, alert behavior, and that the rule blocks access to or execution of untrusted executable files saved by Office macros.
-- [Microsoft ASR demonstrations](https://learn.microsoft.com/en-us/defender-endpoint/defender-endpoint-demonstration-attack-surface-reduction-rules) publishes a Rule 06 DOCM but warns that demonstration files intentionally simulate malicious behavior and can trigger multiple rules.
+- [Microsoft ASR rule reference](https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference) confirms the rule identity, dependencies, supported platforms, reporting actions, and notification behavior.
+- [Microsoft ASR demonstrations](https://learn.microsoft.com/en-us/defender-endpoint/defender-endpoint-demonstration-attack-surface-reduction-rules) publishes the DOCM used here, warns that demonstration files intentionally simulate malicious behavior, and states that some samples can trigger multiple ASR rules.
 - [Microsoft ASR events reference](https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-windows-events) defines Event 1121 as Block, 1122 as Audit, and 1129 as Warn override.
-- [Microsoft ADO `SaveToFile` reference](https://learn.microsoft.com/en-us/office/client-developer/access/desktop-database-reference/savetofile-method-ado) documents the binary stream operation used by the primary benign macro.
 
-### Why the official DOCM is not used
+Official sample URL:
 
-The official Rule 06 document was inspected during research. Its visible warning states that its dropped executable attempts to encrypt `.docx`, `.xlsx`, `.pptx`, `.bmp`, `.jpg`, `.txt`, `.wav`, and `.pdf` files under a selected folder or `C:\demo` by default. It is intentionally excluded from this repository and runner. This project does not create a Defender exclusion or execute an encryption demonstration.
+```text
+https://demo.wd.microsoft.com/Content/TestFile_Block_Office_applications_from_creating_executable_content_3b576869-a4ec-4529-8536-b80a7769e899.docm
+```
+
+Reviewed sample size: 276,775 bytes. Pinned SHA-256:
+
+```text
+785b85b4206a1bff7555df66850309e366d76951e037fe1a8d4f50caa5c424a0
+```
 
 ## Objective and safety boundary
 
-The runner compiles a local .NET executable whose only behavior is writing `payload-ran.txt` under `%TEMP%\DefenderASRLab\06-office-executable-content`. It never reads, modifies, encrypts, or deletes user files. The runner does not execute it directly.
+The primary test downloads Microsoft's official Rule 06 DOCM, verifies the pinned SHA-256, opens it in Word, and correlates Defender events using only the target GUID. The binary sample is not committed to this repository.
 
-The generated VBA module copies that marker-only executable to a second lab path and asks Office to launch the copy. The primary macro uses `ADODB.Stream`; the fallback uses VBA binary file I/O. The runner correlates only the target GUID and records other ASR events separately because Rule 08, Rule 09, or Rule 13 might preempt execution. Both executable files are deleted after evidence collection.
+The document warns that it can download and attempt to run `lockysample.exe`, which can operate on document and media files if the ASR protection does not stop it. Consequently, the runner refuses to open it unless all of these conditions are true:
 
-The runner changes no Defender, Office, Trust Center, or tenant policy. VBA import and execution remain manual, and the blank Word document must be closed without saving.
+1. The operator supplies `-AcknowledgeOfficialSampleRisk`.
+2. The effective target rule reports `Block`.
+3. Defender Antivirus and real-time protection are active.
+4. RPC is running.
+5. `%TEMP%\lockysample.exe` did not exist before the run.
+6. No Word process is already open.
+
+The runner creates no Defender exclusion and changes no Defender, Office, Trust Center, or tenant policy. It tracks and removes only the copy it downloaded and `%TEMP%\lockysample.exe` when that file did not exist before the test. A cleanup manifest supports recovery after an interruption.
+
+Use only on the disposable test endpoint. Do not select a folder containing real data if the demonstration asks for a target folder.
 
 ## Test plan
 
-### Primary - ADODB.Stream
+### Primary - official Microsoft download
 
-1. Confirm effective rule state, Defender health, RPC, and Word availability.
-2. Compile the marker-only executable locally and generate a path-specific `.bas` module.
-3. Open a blank Word instance and manually import the module.
-4. Run `RunRule06Test`, then correlate Event 1121/1122 by target GUID.
-5. Record any competing ASR or Antivirus events, delete both executable artifacts, and save JSON evidence.
+1. Enforce the safety preflight and record Defender state.
+2. Download the official DOCM and require the pinned SHA-256.
+3. Open the verified document in a clean Word process.
+4. Enable content only for that document and observe the result.
+5. Correlate Event 1121/1122 by exact target GUID and record competing ASR or Antivirus events separately.
+6. Delete runner-created artifacts and save JSON evidence.
 
-### Fallback - VBA binary I/O
+### Fallbacks
 
-If `CreateObject("ADODB.Stream")` fails without a target ASR event, rerun with `-Trigger VbaBinary`. The fallback reads and writes the same marker-only executable using native VBA binary file operations. Its execution, evidence, and cleanup boundaries are identical.
+1. If PowerShell or Defender prevents the download, manually download the same Microsoft file and provide `-MicrosoftSamplePath`; the hash requirement remains unchanged.
+2. If Mark of the Web prevents the verified document from running, use `-AllowUnblockSample`. This removes the zone marker only from the hash-verified DOCM and does not weaken Office globally.
+3. If Word is installed in a nonstandard location, provide its complete path with `-WordPath`.
 
-An Office policy block, VBA import restriction, or event from only a different ASR rule is `Inconclusive`, not proof that Rule 06 fired.
+Protected View, Office macro policy, Antivirus-only detection, or an event from only a different ASR rule is `Inconclusive`, not a successful Rule 06 block.
 
 ## Run on Windows
 
 Prerequisites:
 
-- Disposable Windows 10 1709+, Windows 11, or supported Windows device with desktop Word
-- All Word windows closed before starting
-- Microsoft Defender Antivirus and real-time protection active
-- RPC service running
+- Disposable Windows test endpoint with desktop Word
 - Target Rule 06 deployed in Block mode
-- VBA editor and manual macro execution allowed on the test endpoint
+- Defender Antivirus and real-time protection active
+- RPC running
+- All Word windows closed
+- No real data stored under the test context or `C:\demo`
+- Test path not covered by Defender or ASR exclusions
 
 Primary command:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\rules\06-office-executable-content\Invoke-ASROfficeExecutableContentTest.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\rules\06-office-executable-content\Invoke-ASROfficeExecutableContentTest.ps1" `
+  -AllowOfficialDownload `
+  -AcknowledgeOfficialSampleRisk
 ```
 
-When blank Word opens:
+When Word opens:
 
-1. Press `Alt+F11`.
-2. In the VBA editor, select **File > Import File**.
-3. Import the exact `.bas` path printed by the runner.
-4. Place the cursor inside `RunRule06Test` and press `F5`.
-5. Observe the result, close Word without saving, then answer the PowerShell prompt.
+1. Select **Enable Editing** if shown.
+2. Enable macro/content only for this verified document if Word offers the option.
+3. Do not select a real data folder if prompted.
+4. Observe Word and Windows Security, then close Word without saving.
+5. Return to PowerShell and enter `B`, `R`, `O`, or `U` as described by the runner.
 
-Fallback after an ADODB-specific error without target Event 1121:
+Manual-file fallback:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\rules\06-office-executable-content\Invoke-ASROfficeExecutableContentTest.ps1" -Trigger VbaBinary
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\rules\06-office-executable-content\Invoke-ASROfficeExecutableContentTest.ps1" `
+  -MicrosoftSamplePath 'C:\Lab\TestFile_Block_Office_applications_from_creating_executable_content_3b576869-a4ec-4529-8536-b80a7769e899.docm' `
+  -AcknowledgeOfficialSampleRisk
+```
+
+Mark-of-the-Web fallback, only after the normal attempt is preempted by Office:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\rules\06-office-executable-content\Invoke-ASROfficeExecutableContentTest.ps1" `
+  -AllowOfficialDownload `
+  -AllowUnblockSample `
+  -AcknowledgeOfficialSampleRisk
 ```
 
 ## Success evidence
 
-A successful Block validation requires all of the following:
+A successful Block validation requires:
 
 1. `Result = Blocked`.
-2. `PayloadRan = False`.
+2. `ActualSampleSha256` equals the pinned hash.
 3. `AsrEvents` contains Event 1121 with GUID `3b576869-a4ec-4529-8536-b80a7769e899`.
-4. `CleanupSucceeded = True` and `RemainingExecutableArtifacts` is empty.
+4. `CleanupSucceeded = True` and `RemainingTrackedArtifacts` is empty.
 
-`DroppedPayloadCreatedBeforeCleanup` can be either `True` or `False`; this rule can block access to or execution of executable content after Office writes it. A user notification is supported, but the target Event 1121 remains the decisive evidence. This rule doesn't generate an EDR alert; use Advanced Hunting/ASR reporting rather than waiting for an incident.
+A block notification is expected, but matching Event 1121 is the decisive local evidence. This rule does not generate an EDR alert, so absence of an incident is expected.
 
 Evidence is saved to:
 
 ```text
-%TEMP%\DefenderASRLab\06-office-executable-content\result-AdodbStream.json
+%TEMP%\DefenderASRLab\06-office-executable-content\result-MicrosoftSample.json
 ```
 
 Manual local check:
@@ -108,31 +141,29 @@ Get-WinEvent -FilterHashtable @{
   Select-Object TimeCreated, Id, RecordId, Message
 ```
 
-For Microsoft Defender XDR, open **Hunting > Advanced hunting** and run [advanced-hunting.kql](advanced-hunting.kql). A successful result uses `AsrExecutableOfficeContentBlocked`.
+For Microsoft Defender XDR, open **Hunting > Advanced hunting** and run [advanced-hunting.kql](advanced-hunting.kql). A successful portal result uses `AsrExecutableOfficeContentBlocked`.
 
 ## Troubleshooting decisions
 
 | Observation | Interpretation | Next action |
 |---|---|---|
-| Target Event 1121 + payload marker absent | Rule 06 blocked the Office-created executable | Preserve JSON, notification, and hunting evidence. |
-| Target Event 1122 | Endpoint is auditing | Check effective policy assignment and policy conflicts. |
-| Only another ASR Rule ID appears | Rule 08, 09, or 13 preempted the target behavior | Preserve as `Inconclusive`; do not credit Rule 06. |
-| ADODB object error + no target event | Primary method did not reach the protected behavior | Rerun with `-Trigger VbaBinary`. |
-| VBA editor/import is blocked | Office policy stopped the macro first | Preserve as `Inconclusive`; do not weaken tenant policy for this test. |
-| `PayloadRan = True` + no target event | Marker-only executable ran | Rule 06 did not trigger; verify effective rule state and exclusions. |
-| `CleanupSucceeded = False` | A generated executable remains | Run `-CleanupOnly` immediately. |
-| Local target Event 1121 but portal is empty | Local enforcement succeeded; telemetry may be delayed | Run Advanced Hunting later and verify endpoint onboarding. |
+| Target Event 1121 | Rule 06 blocked the official demonstration | Preserve JSON, notification, and hunting evidence. |
+| Target Event 1122 | Endpoint is auditing | Stop testing and check effective policy assignment. |
+| Safety stop reports target rule is not Block | Running the official sample is not permitted by this runner | Correct policy deployment before retrying. |
+| Download or hash validation fails | Sample was blocked, quarantined, changed, or incomplete | Do not open it; use the exact manual-file fallback or revalidate the current Microsoft hash. |
+| Only another ASR rule fires | Another enabled rule preempted Rule 06 | Preserve as `Inconclusive`; inspect `OtherAsrEvents`. |
+| Antivirus Event 1116/1117 without target Event 1121 | Antivirus preempted the macro | Preserve as `Inconclusive`; do not create an exclusion. |
+| Office blocks macros from the internet | Mark of the Web stopped the sample first | Retry once with `-AllowUnblockSample` after confirming the pinned hash. |
+| `R` selected and no target event | The protected behavior was not blocked | Close Word immediately, confirm cleanup, and investigate policy before another run. |
+| `CleanupSucceeded = False` | A tracked artifact remains or Word still holds it open | Close Word and run `-CleanupOnly` immediately. |
+| Local Event 1121 but portal is empty | Local enforcement succeeded; ingestion can be delayed | Retry Advanced Hunting later and verify endpoint onboarding. |
 
 ## Emergency cleanup
 
-The runner deletes both executable files automatically. If interrupted, close Word and run:
+Close Word first, then run:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\rules\06-office-executable-content\Invoke-ASROfficeExecutableContentTest.ps1" -CleanupOnly
 ```
 
-After preserving JSON evidence, remove the remaining macro source, marker, and output directory:
-
-```powershell
-Remove-Item -LiteralPath "$env:TEMP\DefenderASRLab\06-office-executable-content" -Recurse
-```
+The command uses the cleanup manifest to avoid deleting a pre-existing `%TEMP%\lockysample.exe`. After preserving JSON evidence and confirming tracked artifacts are absent, the remaining evidence folder can be removed manually.
