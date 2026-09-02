@@ -27,16 +27,22 @@ The first Windows run reached evidence collection but stopped with `The property
 
 The collector now wraps both ASR and Antivirus event results with `@(...)`, guaranteeing an array for zero, one, or many events. Retest with the same command after pulling this fix.
 
+### 2026-09-02 - JScript v1 not triggered
+
+The corrected runner completed with `MarkerCreated = True`, `Result = Not triggered`, and no target-rule event. This proves that the short percent-encoded script ran, but its obfuscation and direct file-write behavior did not cross the Defender heuristic.
+
+Review of Microsoft's official sample showed a much larger obfuscated data structure followed by process launch behavior. The local primary trigger is now `xor-hex-child-process-v2`: it XOR-hex encodes a large deterministic blob and decodes it through `eval()`. The decoded behavior starts `cmd.exe` only to write the same marker. It performs no download, persistence, credential access, or security change.
+
 ## Test design
 
-The primary trigger generates a JScript whose readable source is percent-encoded and executed through `eval(unescape())`. After decoding, the script performs only one action: use `Scripting.FileSystemObject` to write a marker under `%TEMP%\DefenderASRLab`. It launches no child process, downloads nothing, and changes no persistence or security settings.
+The primary trigger generates a large JScript blob encoded as XOR-hex and reconstructed through `eval()`. After decoding, the script starts `cmd.exe` only to write a marker under `%TEMP%\DefenderASRLab`. It downloads nothing and changes no persistence or security settings. The generated file has no Mark of the Web, so the separate rule for JavaScript or VBScript launching downloaded executable content should not own this event.
 
 The runner separately collects target-rule Event 1121/1122 and Antivirus detection/remediation Event 1116/1117. This prevents an Antivirus signature block from being incorrectly credited to the ASR rule.
 
 ### Primary plan - JScript
 
 1. Confirm effective rule mode, Defender health, cloud protection, script scanning, and AMSI presence.
-2. Generate the harmless percent-encoded `.js` artifact locally without Mark of the Web.
+2. Generate the harmless XOR-hex `.js` artifact locally without Mark of the Web.
 3. Execute it with `cscript.exe` and wait for Defender evaluation.
 4. Correlate ASR events by GUID and separately record Antivirus events.
 5. Confirm whether the decoded script created its marker and save JSON evidence.
@@ -115,7 +121,7 @@ For Microsoft Defender XDR, open **Hunting > Advanced hunting** and run [advance
 | Event 1121 + marker absent | Target ASR rule blocked execution | Preserve JSON, notification, and portal evidence. |
 | Event 1122 + marker exists | Endpoint is auditing | Check effective policy assignment and conflicts. |
 | Event 1116/1117 but no Event 1121 | Antivirus preempted the target ASR rule | Review Protection History and use the alternate local trigger. |
-| No event + marker exists | Obfuscation heuristic did not trigger | Confirm cloud protection and use the PowerShell fallback. |
+| No event + marker exists | Obfuscation heuristic did not trigger | Confirm `ArtifactVersion` is `xor-hex-child-process-v2`, then use the PowerShell fallback. |
 | No event + marker absent | Trigger failed before conclusive evaluation | Review `TriggerError`, `ProcessExitCode`, script scanning, and application-control policy. |
 | `CloudProtectionEnabled` is `False` | Required dependency is missing | Correct tenant/device configuration before retesting. |
 | Local Event 1121 but portal is empty | Local enforcement succeeded; ingestion is pending or onboarding needs review | Wait, then run Advanced Hunting and check device onboarding. |

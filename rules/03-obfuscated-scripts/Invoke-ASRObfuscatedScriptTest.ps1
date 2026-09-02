@@ -79,10 +79,13 @@ function Get-AntivirusEvents {
     } -ErrorAction SilentlyContinue)
 }
 
-function ConvertTo-PercentEncodedAscii {
-    param([Parameter(Mandatory)][string]$Value)
+function ConvertTo-XorHexAscii {
+    param(
+        [Parameter(Mandatory)][string]$Value,
+        [Parameter(Mandatory)][byte]$Key
+    )
 
-    return -join ([Text.Encoding]::ASCII.GetBytes($Value) | ForEach-Object { '%{0:X2}' -f $_ })
+    return -join ([Text.Encoding]::ASCII.GetBytes($Value) | ForEach-Object { '{0:X2}' -f ($_ -bxor $Key) })
 }
 
 function Get-OptionalPropertyValue {
@@ -123,6 +126,7 @@ $startedAt = Get-Date
 $triggerError = $null
 $processExitCode = $null
 $triggerDetail = $null
+$artifactVersion = $null
 
 Write-Host "Rule: $RuleName"
 Write-Host "GUID: $RuleId"
@@ -153,15 +157,26 @@ if (-not $amsiPresent) {
 
 try {
     if ($Trigger -eq 'JScript') {
-        $clearJScript = @'
+        $padding = [Text.StringBuilder]::new()
+        for ($index = 0; $index -lt 512; $index++) {
+            [void]$padding.AppendLine(('var benignNoop{0:D4} = {0};' -f $index))
+        }
+        $clearJScript = $padding.ToString() + @'
 var marker = WScript.Arguments.Item(0);
-var fileSystem = new ActiveXObject("Scripting.FileSystemObject");
-var output = fileSystem.CreateTextFile(marker, true);
-output.WriteLine("defender-asr-rule-03");
-output.Close();
+var shell = new ActiveXObject("WScript.Shell");
+var command = '"' + shell.ExpandEnvironmentStrings("%ComSpec%") + '" /d /c echo defender-asr-rule-03> "' + marker + '"';
+shell.Run(command, 0, true);
 '@
-        $encodedJScript = ConvertTo-PercentEncodedAscii -Value $clearJScript
-        $obfuscatedJScript = 'eval(unescape("' + $encodedJScript + '"));'
+        $xorKey = [byte]0x5A
+        $encodedJScript = ConvertTo-XorHexAscii -Value $clearJScript -Key $xorKey
+        $obfuscatedJScript = @"
+var encodedPayload = "$encodedJScript";
+var decodedPayload = "";
+for (var offset = 0; offset < encodedPayload.length; offset += 2) {
+    decodedPayload += String.fromCharCode(parseInt(encodedPayload.substr(offset, 2), 16) ^ 0x5A);
+}
+eval(decodedPayload);
+"@
         $artifactPath = Join-Path $OutputDirectory 'obfuscated-marker-test.js'
         [IO.File]::WriteAllText($artifactPath, $obfuscatedJScript, [Text.Encoding]::ASCII)
 
@@ -170,7 +185,8 @@ output.Close();
             throw "Windows Script Host was not found at: $cscriptPath"
         }
 
-        $triggerDetail = 'Percent-encoded JScript using eval(unescape()) to write one marker file'
+        $artifactVersion = 'xor-hex-child-process-v2'
+        $triggerDetail = 'Large XOR-hex JScript blob decoded through eval() to launch a marker-only cmd.exe child'
         $arguments = '//nologo "{0}" "{1}"' -f $artifactPath, $markerPath
         $process = Start-Process -FilePath $cscriptPath -ArgumentList $arguments -Wait -PassThru
         $processExitCode = $process.ExitCode
@@ -183,6 +199,7 @@ output.Close();
         $outerBase64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($decodedCommand))
         $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
+        $artifactVersion = 'nested-base64-powershell-v1'
         $triggerDetail = 'PowerShell EncodedCommand containing a second Base64 layer and marker-only Set-Content'
         $process = Start-Process -FilePath $powerShellPath -ArgumentList @(
             '-NoProfile',
@@ -259,6 +276,7 @@ $result = [pscustomobject]@{
     ScriptScanningDisabled = $disableScriptScanning
     AmsiPresent = $amsiPresent
     Trigger = $Trigger
+    ArtifactVersion = $artifactVersion
     TriggerDetail = $triggerDetail
     TriggerError = $triggerError
     ProcessExitCode = $processExitCode
