@@ -11,6 +11,19 @@
 - EDR alert expected: No
 - User notification supported: Yes
 
+## Observed test runs
+
+### 2026-09-02 - Blocked locally / Portal pending
+
+Operator-reported observations:
+
+- A Defender block notification appeared.
+- The runner returned `Result = Blocked`.
+- A detailed local Windows Defender event was recorded.
+- Defender portal synchronization is still pending.
+
+The documented local success criteria were met. Advanced Hunting telemetry remains a secondary confirmation because this rule is not expected to generate an EDR Alert or Incident.
+
 ## Research notes
 
 Reviewed on 2026-09-02:
